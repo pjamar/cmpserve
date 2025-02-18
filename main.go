@@ -20,9 +20,11 @@ type Server struct {
 }
 
 func NewServer(archiveDir string) (*Server, error) {
-	return &Server{
-		archiveDir: archiveDir,
-	}, nil
+	archiveDir = filepath.Clean(archiveDir)
+	if stat, err := os.Stat(archiveDir); err != nil || !stat.IsDir() {
+		return nil, errors.New("invalid archive directory")
+	}
+	return &Server{archiveDir: archiveDir}, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -30,8 +32,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(urlPath, "/")
 
 	currentPath := s.archiveDir
-	var archivePath string
-	var remainingPath string
+	var archivePath, remainingPath string
 
 	for i, part := range parts {
 		currentPath = filepath.Join(currentPath, part)
@@ -49,12 +50,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			archiveCandidate := currentPath + ext
 			if _, err := os.Stat(archiveCandidate); err == nil {
 				archivePath = archiveCandidate
-				if len(parts)-1 == i {
+				if i == len(parts)-1 {
 					http.Redirect(w, r, "/"+urlPath+"/", http.StatusMovedPermanently)
 					return
-				} else {
-					remainingPath = strings.Join(parts[i+1:], "/")
 				}
+				remainingPath = strings.Join(parts[i+1:], "/")
 				break
 			}
 		}
@@ -62,9 +62,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if archivePath != "" {
 			break
 		}
-
-		http.NotFound(w, r)
-		return
 	}
 
 	if archivePath == "" {
@@ -76,8 +73,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		remainingPath = "index.html"
 	}
 
-	// Serve the file from the zip archive
-	s.serveFileFromZip(w, r, archivePath, remainingPath)
+	s.serveFileFromArchive(w, r, archivePath, remainingPath)
 }
 
 func (s *Server) serveFileFromArchive(w http.ResponseWriter, r *http.Request, archivePath, filePath string) {
@@ -96,46 +92,49 @@ func (s *Server) serveFileFromArchive(w http.ResponseWriter, r *http.Request, ar
 		http.Error(w, "Unsupported archive format", http.StatusUnsupportedMediaType)
 	}
 }
+
 func (s *Server) serveFileFromZip(w http.ResponseWriter, r *http.Request, zipPath, filePath string) {
 	zipReader, err := zip.OpenReader(zipPath)
 	if err != nil {
 		http.Error(w, "Failed to open archive", http.StatusInternalServerError)
+		log.Printf("Error opening ZIP archive: %v", err)
 		return
 	}
-	defer func(zipReader *zip.ReadCloser) {
-		_ = zipReader.Close()
-	}(zipReader)
+	defer zipReader.Close()
 
-	var foundFile *zip.File
+	filePath = filepath.ToSlash(filePath)
+
+	zipMap := make(map[string]*zip.File)
 	for _, file := range zipReader.File {
-		if file.Name == filePath {
-			foundFile = file
-		}
+		zipMap[file.Name] = file
 	}
 
-	if foundFile != nil {
-		reader, err := foundFile.Open()
-		if err != nil {
-			http.Error(w, "Failed to open file in archive", http.StatusInternalServerError)
-			return
-		}
-		defer func(reader io.ReadCloser) {
-			_ = reader.Close()
-		}(reader)
-
-		w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(foundFile.Name)))
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.Copy(w, reader)
+	foundFile, exists := zipMap[filePath]
+	if !exists {
+		http.NotFound(w, r)
 		return
 	}
 
-	http.NotFound(w, r)
+	reader, err := foundFile.Open()
+	if err != nil {
+		http.Error(w, "Failed to open file in archive", http.StatusInternalServerError)
+		log.Printf("Error opening file %s in ZIP archive: %v", filePath, err)
+		return
+	}
+	defer func(reader io.ReadCloser) {
+		_ = reader.Close()
+	}(reader)
+
+	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(foundFile.Name)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, reader)
 }
 
 func (s *Server) serveFileFromTar(w http.ResponseWriter, r *http.Request, tarPath, filePath string) {
 	file, err := os.Open(tarPath)
 	if err != nil {
 		http.Error(w, "Failed to open archive", http.StatusInternalServerError)
+		log.Printf("Error opening TAR archive: %v", err)
 		return
 	}
 	defer func(file *os.File) {
@@ -147,10 +146,12 @@ func (s *Server) serveFileFromTar(w http.ResponseWriter, r *http.Request, tarPat
 	for {
 		hdr, err := tarReader.Next()
 		if err == io.EOF {
-			break
+			http.NotFound(w, r)
+			return
 		}
 		if err != nil {
 			http.Error(w, "Failed to read archive", http.StatusInternalServerError)
+			log.Printf("Error reading TAR archive: %v", err)
 			return
 		}
 
@@ -161,8 +162,6 @@ func (s *Server) serveFileFromTar(w http.ResponseWriter, r *http.Request, tarPat
 			return
 		}
 	}
-
-	http.NotFound(w, r)
 }
 
 func main() {
