@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"archive/zip"
+	"compress/bzip2"
 	"errors"
 	"io"
 	"log"
@@ -46,7 +47,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		for _, ext := range []string{".zip", ".tar", ".tar.bz"} {
+		for _, ext := range []string{".zip", ".tar", ".tar.bz", ".tar.bz2"} {
 			archiveCandidate := currentPath + ext
 			if _, err := os.Stat(archiveCandidate); err == nil {
 				archivePath = archiveCandidate
@@ -86,7 +87,7 @@ func (s *Server) serveFileFromArchive(w http.ResponseWriter, r *http.Request, ar
 	switch filepath.Ext(archivePath) {
 	case ".zip":
 		s.serveFileFromZip(w, r, archivePath, filePath)
-	case ".tar", ".tar.bz":
+	case ".tar", ".bz", ".bz2":
 		s.serveFileFromTar(w, r, archivePath, filePath)
 	default:
 		http.Error(w, "Unsupported archive format", http.StatusUnsupportedMediaType)
@@ -141,7 +142,12 @@ func (s *Server) serveFileFromTar(w http.ResponseWriter, r *http.Request, tarPat
 		_ = file.Close()
 	}(file)
 
-	tarReader := tar.NewReader(file)
+	var tarReader *tar.Reader
+	if strings.HasSuffix(tarPath, ".tar.bz2") {
+		tarReader = tar.NewReader(bzip2.NewReader(file))
+	} else {
+		tarReader = tar.NewReader(file)
+	}
 
 	for {
 		hdr, err := tarReader.Next()
