@@ -1,4 +1,6 @@
-# Comprehensive Documentation for cmpserve
+# cmpserve
+
+An HTTP server to display zip files as folders, making it easy to serve compact static archives.
 
 ## Overview
 `cmpserve` is a lightweight HTTP server designed to serve files and directories, with enhanced support for ZIP archives using an indexed caching system for fast access. The project provides an efficient way to expose files over HTTP while optionally displaying directory indexes and handling hidden files.
