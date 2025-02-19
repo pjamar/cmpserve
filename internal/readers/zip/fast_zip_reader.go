@@ -13,80 +13,126 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// Initialize the SQLite table if it doesn't exist.
+type FastZipReader struct {
+	db *sql.DB
+}
+
+// NewFastZipReader Initialize the database and tables if needed.
+func NewFastZipReader(dbPath string) (*FastZipReader, error) {
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := initDB(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return &FastZipReader{db: db}, nil
+}
+
+// Close the database connection.
+func (zi *FastZipReader) Close() error {
+	return zi.db.Close()
+}
+
+// Initialize database tables.
 func initDB(db *sql.DB) error {
 	query := `
-	CREATE TABLE IF NOT EXISTS lookup_zip (
+	CREATE TABLE IF NOT EXISTS lookup_zip_files (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		zip_filename TEXT NOT NULL,
+		zip_path TEXT UNIQUE NOT NULL,
+		size INTEGER NOT NULL,
+		modification_time INTEGER NOT NULL,
+		indexed_at DATETIME NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS lookup_zip_contents (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		zip_id INTEGER NOT NULL,
 		file_name TEXT NOT NULL,
 		offset INTEGER NOT NULL,
 		compressed_size INTEGER NOT NULL,
 		uncompressed_size INTEGER NOT NULL,
 		compression_method INTEGER NOT NULL,
-		indexed_at DATETIME NOT NULL,
-		UNIQUE(zip_filename, file_name)
+		FOREIGN KEY(zip_id) REFERENCES lookup_zip_files(id),
+		UNIQUE(zip_id, file_name)
 	);
 	`
 	_, err := db.Exec(query)
 	return err
 }
 
-// Indexes a ZIP file in the SQLite database.
-func indexZipFile(db *sql.DB, zipFilename string) error {
-	// Open the ZIP file
-	file, err := os.Open(zipFilename)
+// Indexes a ZIP file, reindexing if it has changed.
+func (zi *FastZipReader) indexZip(zipPath string) error {
+	fileInfo, err := os.Stat(zipPath)
+	if err != nil {
+		return fmt.Errorf("failed to get file info: %w", err)
+	}
+
+	var zipID int
+	var existingSize int64
+	var existingModTime int64
+	row := zi.db.QueryRow("SELECT id, size, modification_time FROM lookup_zip_files WHERE zip_path = ?", zipPath)
+	err = row.Scan(&zipID, &existingSize, &existingModTime)
+	if err == nil && (existingSize != fileInfo.Size() || existingModTime != fileInfo.ModTime().Unix()) {
+		// File changed, reindex
+		_, _ = zi.db.Exec("DELETE FROM lookup_zip_contents WHERE zip_id = ?", zipID)
+		_, _ = zi.db.Exec("DELETE FROM lookup_zip_files WHERE id = ?", zipID)
+	} else if err == nil {
+		// File unchanged, skip indexing
+		return nil
+	}
+
+	return zi.indexZipFile(zipPath, fileInfo)
+}
+
+// Internal function to index a ZIP file.
+func (zi *FastZipReader) indexZipFile(zipPath string, fileInfo os.FileInfo) error {
+	file, err := os.Open(zipPath)
 	if err != nil {
 		return fmt.Errorf("failed to open ZIP file: %w", err)
 	}
 	defer file.Close()
-
-	fileInfo, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("failed to get file info: %w", err)
-	}
 
 	zipReader, err := zip.NewReader(file, fileInfo.Size())
 	if err != nil {
 		return fmt.Errorf("failed to create ZIP reader: %w", err)
 	}
 
-	tx, err := db.Begin()
+	tx, err := zi.db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback() // Will be ignored if tx.Commit() is called
+	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`
-	INSERT OR IGNORE INTO lookup_zip 
-	(zip_filename, file_name, offset, compressed_size, uncompressed_size, compression_method, indexed_at) 
-	VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	result, err := tx.Exec(
+		"INSERT INTO lookup_zip_files (zip_path, size, modification_time, indexed_at) VALUES (?, ?, ?, ?)",
+		zipPath, fileInfo.Size(), fileInfo.ModTime().Unix(), time.Now().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to insert ZIP file metadata: %w", err)
+	}
+
+	zipID, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("failed to get last insert ID: %w", err)
+	}
+
+	stmt, err := tx.Prepare("INSERT INTO lookup_zip_contents (zip_id, file_name, offset, compressed_size, uncompressed_size, compression_method) VALUES (?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return fmt.Errorf("failed to prepare statement: %w", err)
 	}
 	defer stmt.Close()
 
-	indexedAt := time.Now().Format(time.RFC3339)
-
 	for _, f := range zipReader.File {
-		if f.Method != zip.Store && f.Method != zip.Deflate {
-			continue // Skip unsupported compression methods
-		}
-
 		offset, err := f.DataOffset()
 		if err != nil {
 			return fmt.Errorf("failed to get data offset for %s: %w", f.Name, err)
 		}
 
-		_, err = stmt.Exec(
-			zipFilename,
-			f.Name,
-			offset,
-			f.CompressedSize64,
-			f.UncompressedSize64,
-			f.Method,
-			indexedAt,
-		)
+		_, err = stmt.Exec(zipID, f.Name, offset, f.CompressedSize64, f.UncompressedSize64, f.Method)
 		if err != nil {
 			return fmt.Errorf("failed to insert record for %s: %w", f.Name, err)
 		}
@@ -98,52 +144,40 @@ func indexZipFile(db *sql.DB, zipFilename string) error {
 	return nil
 }
 
-// fileMetadata holds information about a file in the ZIP archive
-type fileMetadata struct {
-	Offset            int64
-	CompressedSize    uint64
-	UncompressedSize  uint64
-	CompressionMethod uint16
-}
-
-// Check if the file exists in the index and retrieve its metadata.
-func getFileMetadata(db *sql.DB, zipFilename, filename string) (*fileMetadata, error) {
-	var metadata fileMetadata
-
-	query := `
-		SELECT offset, compressed_size, uncompressed_size, compression_method 
-		FROM lookup_zip 
-		WHERE zip_filename = ? AND file_name = ?`
-
-	err := db.QueryRow(query, zipFilename, filename).Scan(
-		&metadata.Offset,
-		&metadata.CompressedSize,
-		&metadata.UncompressedSize,
-		&metadata.CompressionMethod,
-	)
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("file %s not found in index", filename)
-	} else if err != nil {
-		return nil, fmt.Errorf("database query failed: %w", err)
+// StreamFile Streams a file from the ZIP archive. The archive gets indexed automatically.
+func (zi *FastZipReader) StreamFile(zipPath, filename string, writer io.Writer) error {
+	var zipID int
+	var row *sql.Row
+	row = zi.db.QueryRow("SELECT id FROM lookup_zip_files WHERE zip_path = ?", zipPath)
+	if err := row.Scan(&zipID); err != nil {
+		err = zi.indexZip(zipPath)
+		if err != nil {
+			return err
+		}
+		row = zi.db.QueryRow("SELECT id FROM lookup_zip_files WHERE zip_path = ?", zipPath)
+		if err := row.Scan(&zipID); err != nil {
+			return fmt.Errorf("database error for file %s", filename)
+		}
 	}
 
-	return &metadata, nil
-}
+	var metadata struct {
+		Offset            int64
+		CompressedSize    uint64
+		UncompressedSize  uint64
+		CompressionMethod uint16
+	}
 
-// StreamFile Extract file contents using the pre-indexed metadata and write to a given writer.
-func StreamFile(db *sql.DB, zipFilename, filename string, writer io.Writer) error {
-	metadata, err := getFileMetadata(db, zipFilename, filename)
+	err := zi.db.QueryRow("SELECT offset, compressed_size, uncompressed_size, compression_method FROM lookup_zip_contents WHERE zip_id = ? AND file_name = ?", zipID, filename).Scan(&metadata.Offset, &metadata.CompressedSize, &metadata.UncompressedSize, &metadata.CompressionMethod)
 	if err != nil {
-		return err
+		return fmt.Errorf("file %s not found in index: %w", filename, err)
 	}
 
-	file, err := os.Open(zipFilename)
+	file, err := os.Open(zipPath)
 	if err != nil {
 		return fmt.Errorf("failed to open ZIP file: %w", err)
 	}
 	defer file.Close()
 
-	// Read the compressed data
 	compressedData := make([]byte, metadata.CompressedSize)
 	_, err = file.Seek(metadata.Offset, 0)
 	if err != nil {
@@ -155,58 +189,15 @@ func StreamFile(db *sql.DB, zipFilename, filename string, writer io.Writer) erro
 		return fmt.Errorf("failed to read compressed data: %w", err)
 	}
 
-	// For stored (uncompressed) files, write the data directly
 	if metadata.CompressionMethod == zip.Store {
 		_, err = writer.Write(compressedData)
 		return err
-	}
-
-	// For deflated files, decompress and write to writer
-	if metadata.CompressionMethod == zip.Deflate {
+	} else if metadata.CompressionMethod == zip.Deflate {
 		r := flate.NewReader(bytes.NewReader(compressedData))
 		defer r.Close()
-
 		_, err = io.Copy(writer, r)
 		return err
 	}
 
 	return fmt.Errorf("unsupported compression method: %d", metadata.CompressionMethod)
 }
-
-//func main() {
-//	db, err := sql.Open("sqlite3", "zip_index.db")
-//	if err != nil {
-//		fmt.Fprintf(os.Stderr, "Database connection error: %v\n", err)
-//		os.Exit(1)
-//	}
-//	defer db.Close()
-//
-//	if err := initDB(db); err != nil {
-//		fmt.Fprintf(os.Stderr, "DB initialization error: %v\n", err)
-//		os.Exit(1)
-//	}
-//
-//	if len(os.Args) < 3 {
-//		fmt.Println("Usage: program <zip_file> <file_to_extract>")
-//		os.Exit(1)
-//	}
-//
-//	zipFilename := os.Args[1]
-//	filenameToRetrieve := os.Args[2]
-//
-//	// Index the ZIP file if it hasn't been indexed
-//	if err := indexZipFile(db, zipFilename); err != nil {
-//		fmt.Fprintf(os.Stderr, "Error indexing ZIP file: %v\n", err)
-//		os.Exit(1)
-//	}
-//
-//	// Retrieve and print file contents
-//	data, err := extractFile(db, zipFilename, filenameToRetrieve)
-//	if err != nil {
-//		fmt.Fprintf(os.Stderr, "Error extracting file: %v\n", err)
-//		os.Exit(1)
-//	}
-//
-//	fmt.Printf("Successfully extracted %s (%d bytes)\n", filenameToRetrieve, len(data))
-//	os.Stdout.Write(data)
-//}
