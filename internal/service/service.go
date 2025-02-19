@@ -2,6 +2,7 @@ package service
 
 import (
 	"cmpserve/internal/readers/zip"
+	"cmpserve/internal/readers/zipfast"
 	"errors"
 	"net/http"
 	"os"
@@ -12,7 +13,7 @@ import (
 type Service struct {
 	rootServiceDir    string
 	cacheServiceDir   string
-	zipReader         zip.FastZipReader
+	zipReader         zipfast.FastZipReader
 	createIndexes     bool
 	exposeHiddenFiles bool
 }
@@ -26,7 +27,7 @@ func NewService(rootServiceDir, cacheServiceDir string, createIndexes bool, expo
 	if stat, err := os.Stat(cacheServiceDir); err != nil || !stat.IsDir() {
 		return nil, errors.New("invalid cache directory")
 	}
-	zipReader, err := zip.NewFastZipReader(cacheServiceDir + "/.zip_reader_cache.db")
+	zipReader, err := zipfast.NewFastZipReader(cacheServiceDir + "/.zip_reader_cache.db")
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +104,10 @@ func (s *Service) listDirectory(w http.ResponseWriter, dirPath, urlPath string) 
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("<html><body><h1>Index of " + urlPath + "</h1><ul>"))
+	_, err = w.Write([]byte("<html><body><h1>Index of " + urlPath + "</h1><ul>"))
+	if err != nil {
+		return
+	}
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -111,7 +115,7 @@ func (s *Service) listDirectory(w http.ResponseWriter, dirPath, urlPath string) 
 			continue
 		}
 
-		linkName := filepath.Join(urlPath, name)
+		var linkName string
 		var extraLink string
 
 		if entry.IsDir() {
@@ -121,10 +125,18 @@ func (s *Service) listDirectory(w http.ResponseWriter, dirPath, urlPath string) 
 			nameWithoutExt := strings.TrimSuffix(name, ".zip") + "/"
 			linkName = nameWithoutExt
 			extraLink = " (<a href=\"" + name + "\">download</a>)"
+		} else {
+			linkName = name
 		}
 
-		w.Write([]byte("<li><a href=\"" + linkName + "\">" + name + "</a>" + extraLink + "</li>"))
+		_, err = w.Write([]byte("<li><a href=\"" + linkName + "\">" + name + "</a>" + extraLink + "</li>"))
+		if err != nil {
+			return
+		}
 	}
 
-	w.Write([]byte("</ul></body></html>"))
+	_, err = w.Write([]byte("</ul></body></html>"))
+	if err != nil {
+		return
+	}
 }

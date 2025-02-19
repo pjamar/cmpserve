@@ -1,4 +1,4 @@
-package zip
+package zipfast
 
 import (
 	"archive/zip"
