@@ -43,6 +43,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for i, part := range parts {
 		currentPath = filepath.Join(currentPath, part)
 
+		if !s.exposeHiddenFiles && strings.HasPrefix(part, ".") {
+			http.NotFound(w, r)
+			return
+		}
+
 		if stat, err := os.Stat(currentPath); err == nil {
 			if stat.IsDir() {
 				// If it's a directory and createIndexes is enabled, list the directory contents
@@ -102,6 +107,10 @@ func (s *Service) listDirectory(w http.ResponseWriter, dirPath, urlPath string) 
 
 	for _, entry := range entries {
 		name := entry.Name()
+		if !s.exposeHiddenFiles && strings.HasPrefix(name, ".") {
+			continue
+		}
+
 		linkName := filepath.Join(urlPath, name)
 		var extraLink string
 

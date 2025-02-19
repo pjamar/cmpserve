@@ -16,10 +16,11 @@ func main() {
 	addr := flag.String("addr", "0.0.0.0", "Bind address")
 	port := flag.String("port", "8080", "Port number")
 	createIndexes := flag.Bool("indexes", true, "Display indexes for directories")
+	exposeHiddenFiles := flag.Bool("show-hidden-files", false, "Display and serve hidden files")
 
 	flag.Parse()
 
-	server, err := service.NewService(*dir, *cacheDir, *createIndexes)
+	server, err := service.NewService(*dir, *cacheDir, *createIndexes, *exposeHiddenFiles)
 	if err != nil {
 		log.Fatalf("Failed to initialize server: %v", err)
 	}
