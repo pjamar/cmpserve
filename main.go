@@ -15,7 +15,7 @@ func main() {
 	cacheDir := flag.String("cache-dir", ".", "Cache directory")
 	addr := flag.String("addr", "0.0.0.0", "Bind address")
 	port := flag.String("port", "8080", "Port number")
-	createIndexes := flag.Bool("indexes", true, "Display indexes for directories")
+	createIndexes := flag.Bool("indexes", false, "Display indexes for directories")
 	exposeHiddenFiles := flag.Bool("show-hidden-files", false, "Display and serve hidden files")
 
 	flag.Parse()
