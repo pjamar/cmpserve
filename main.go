@@ -15,10 +15,11 @@ func main() {
 	cacheDir := flag.String("cache-dir", ".", "Cache directory")
 	addr := flag.String("addr", "0.0.0.0", "Bind address")
 	port := flag.String("port", "8080", "Port number")
+	createIndexes := flag.Bool("indexes", true, "Display indexes for directories")
 
 	flag.Parse()
 
-	server, err := service.NewService(*dir, *cacheDir)
+	server, err := service.NewService(*dir, *cacheDir, *createIndexes)
 	if err != nil {
 		log.Fatalf("Failed to initialize server: %v", err)
 	}

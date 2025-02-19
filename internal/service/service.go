@@ -10,13 +10,14 @@ import (
 )
 
 type Service struct {
-	rootServiceDir  string
-	cacheServiceDir string
-	zipReader       zip.FastZipReader
-	createIndexes   bool
+	rootServiceDir    string
+	cacheServiceDir   string
+	zipReader         zip.FastZipReader
+	createIndexes     bool
+	exposeHiddenFiles bool
 }
 
-func NewService(rootServiceDir, cacheServiceDir string, createIndexes bool) (*Service, error) {
+func NewService(rootServiceDir, cacheServiceDir string, createIndexes bool, exposeHiddenFiles bool) (*Service, error) {
 	rootServiceDir = filepath.Clean(rootServiceDir)
 	cacheServiceDir = filepath.Clean(cacheServiceDir)
 	if stat, err := os.Stat(rootServiceDir); err != nil || !stat.IsDir() {
@@ -25,7 +26,7 @@ func NewService(rootServiceDir, cacheServiceDir string, createIndexes bool) (*Se
 	if stat, err := os.Stat(cacheServiceDir); err != nil || !stat.IsDir() {
 		return nil, errors.New("invalid cache directory")
 	}
-	zipReader, err := zip.NewFastZipReader(cacheServiceDir + "/zip_reader_cache.db")
+	zipReader, err := zip.NewFastZipReader(cacheServiceDir + "/.zip_reader_cache.db")
 	if err != nil {
 		return nil, err
 	}
@@ -44,6 +45,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if stat, err := os.Stat(currentPath); err == nil {
 			if stat.IsDir() {
+				// If it's a directory and createIndexes is enabled, list the directory contents
+				if i == len(parts)-1 && s.createIndexes {
+					s.listDirectory(w, currentPath, urlPath)
+					return
+				}
 				continue
 			} else {
 				http.ServeFile(w, r, currentPath)
@@ -64,6 +70,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if archivePath == "" {
+		if s.createIndexes {
+			s.listDirectory(w, currentPath, urlPath)
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}
@@ -77,4 +87,35 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+}
+
+func (s *Service) listDirectory(w http.ResponseWriter, dirPath, urlPath string) {
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		http.Error(w, "Failed to read directory", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("<html><body><h1>Index of " + urlPath + "</h1><ul>"))
+
+	for _, entry := range entries {
+		name := entry.Name()
+		linkName := filepath.Join(urlPath, name)
+		var extraLink string
+
+		if entry.IsDir() {
+			name += "/"
+			linkName = name
+		} else if strings.HasSuffix(name, ".zip") {
+			nameWithoutExt := strings.TrimSuffix(name, ".zip") + "/"
+			linkName = nameWithoutExt
+			extraLink = " (<a href=\"" + name + "\">download</a>)"
+		}
+
+		w.Write([]byte("<li><a href=\"" + linkName + "\">" + name + "</a>" + extraLink + "</li>"))
+	}
+
+	w.Write([]byte("</ul></body></html>"))
 }
