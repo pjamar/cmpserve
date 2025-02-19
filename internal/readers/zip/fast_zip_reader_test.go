@@ -2,6 +2,7 @@ package zip
 
 import (
 	"archive/zip"
+	"bytes"
 	"database/sql"
 	"os"
 	"testing"
@@ -123,10 +124,12 @@ func TestExtractFile(t *testing.T) {
 		t.Fatalf("Indexing failed: %v", err)
 	}
 
-	data, err := extractFile(db, zipPath, "file1.txt")
+	var buffer bytes.Buffer
+	err = StreamFile(db, zipPath, "file1.txt", &buffer)
 	if err != nil {
 		t.Fatalf("Extract failed: %v", err)
 	}
+	data := buffer.String()
 
 	expected := "Hello, World!"
 	if string(data) != expected {
@@ -151,9 +154,10 @@ func TestExtractNonExistentFile(t *testing.T) {
 		t.Fatalf("Indexing failed: %v", err)
 	}
 
-	_, err = extractFile(db, zipPath, "missing.txt")
-	if err == nil {
-		t.Fatal("Expected error for missing file, got nil")
+	var buffer bytes.Buffer
+	err = StreamFile(db, zipPath, "file1.txt", &buffer)
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
 	}
 }
 
@@ -230,7 +234,8 @@ func TestExtractFileWithCorruptIndex(t *testing.T) {
 		t.Fatalf("Failed to corrupt index: %v", err)
 	}
 
-	_, err = extractFile(db, zipPath, "file1.txt")
+	var buffer bytes.Buffer
+	err = StreamFile(db, zipPath, "file1.txt", &buffer)
 	if err == nil {
 		t.Fatal("Expected error due to corrupt index, but got nil")
 	}

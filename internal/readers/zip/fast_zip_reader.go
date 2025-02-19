@@ -98,8 +98,8 @@ func indexZipFile(db *sql.DB, zipFilename string) error {
 	return nil
 }
 
-// FileMetadata holds information about a file in the ZIP archive
-type FileMetadata struct {
+// fileMetadata holds information about a file in the ZIP archive
+type fileMetadata struct {
 	Offset            int64
 	CompressedSize    uint64
 	UncompressedSize  uint64
@@ -107,8 +107,8 @@ type FileMetadata struct {
 }
 
 // Check if the file exists in the index and retrieve its metadata.
-func getFileMetadata(db *sql.DB, zipFilename, filename string) (*FileMetadata, error) {
-	var metadata FileMetadata
+func getFileMetadata(db *sql.DB, zipFilename, filename string) (*fileMetadata, error) {
+	var metadata fileMetadata
 
 	query := `
 		SELECT offset, compressed_size, uncompressed_size, compression_method 
@@ -130,16 +130,16 @@ func getFileMetadata(db *sql.DB, zipFilename, filename string) (*FileMetadata, e
 	return &metadata, nil
 }
 
-// Extract file contents using the pre-indexed metadata.
-func extractFile(db *sql.DB, zipFilename, filename string) ([]byte, error) {
+// StreamFile Extract file contents using the pre-indexed metadata and write to a given writer.
+func StreamFile(db *sql.DB, zipFilename, filename string, writer io.Writer) error {
 	metadata, err := getFileMetadata(db, zipFilename, filename)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	file, err := os.Open(zipFilename)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open ZIP file: %w", err)
+		return fmt.Errorf("failed to open ZIP file: %w", err)
 	}
 	defer file.Close()
 
@@ -147,35 +147,30 @@ func extractFile(db *sql.DB, zipFilename, filename string) ([]byte, error) {
 	compressedData := make([]byte, metadata.CompressedSize)
 	_, err = file.Seek(metadata.Offset, 0)
 	if err != nil {
-		return nil, fmt.Errorf("failed to seek to file offset: %w", err)
+		return fmt.Errorf("failed to seek to file offset: %w", err)
 	}
 
 	_, err = io.ReadFull(file, compressedData)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read compressed data: %w", err)
+		return fmt.Errorf("failed to read compressed data: %w", err)
 	}
 
-	// For stored (uncompressed) files, return the data as-is
+	// For stored (uncompressed) files, write the data directly
 	if metadata.CompressionMethod == zip.Store {
-		return compressedData, nil
+		_, err = writer.Write(compressedData)
+		return err
 	}
 
-	// For deflated files, decompress the data
+	// For deflated files, decompress and write to writer
 	if metadata.CompressionMethod == zip.Deflate {
-		// Create a flate reader from the compressed data
 		r := flate.NewReader(bytes.NewReader(compressedData))
 		defer r.Close()
 
-		// Read all the uncompressed data
-		uncompressedData, err := io.ReadAll(r)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decompress data: %w", err)
-		}
-
-		return uncompressedData, nil
+		_, err = io.Copy(writer, r)
+		return err
 	}
 
-	return nil, fmt.Errorf("unsupported compression method: %d", metadata.CompressionMethod)
+	return fmt.Errorf("unsupported compression method: %d", metadata.CompressionMethod)
 }
 
 //func main() {
