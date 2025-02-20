@@ -6,11 +6,10 @@ import (
 	"compress/flate"
 	"database/sql"
 	"fmt"
+	_ "github.com/glebarez/go-sqlite"
 	"io"
 	"os"
 	"time"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 type FastZipReader struct {
@@ -19,7 +18,7 @@ type FastZipReader struct {
 
 // NewFastZipReader Initialize the database and tables if needed.
 func NewFastZipReader(dbPath string) (*FastZipReader, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, err
 	}
