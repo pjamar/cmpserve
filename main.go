@@ -6,17 +6,25 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
+// getEnvWithDefault fetches an environment variable or falls back to a default value
+func getEnvWithDefault(envKey, defaultValue string) string {
+	if val, exists := os.LookupEnv(envKey); exists {
+		return val
+	}
+	return defaultValue
+}
+
 func main() {
-	// Define optional parameters
-	dir := flag.String("dir", ".", "Service directory")
-	cacheDir := flag.String("cache-dir", ".", "Cache directory")
-	addr := flag.String("addr", "0.0.0.0", "Bind address")
-	port := flag.String("port", "8080", "Port number")
-	createIndexes := flag.Bool("indexes", false, "Display indexes for directories")
-	exposeHiddenFiles := flag.Bool("show-hidden-files", false, "Display and serve hidden files")
+	dir := flag.String("dir", getEnvWithDefault("CMPSERVE_DIR", "."), "Service directory")
+	cacheDir := flag.String("cache-dir", getEnvWithDefault("CMPSERVE_CACHE_DIR", "."), "Cache directory")
+	addr := flag.String("addr", getEnvWithDefault("CMPSERVE_ADDR", "0.0.0.0"), "Bind address")
+	port := flag.String("port", getEnvWithDefault("CMPSERVE_PORT", "8080"), "Port number")
+	createIndexes := flag.Bool("indexes", os.Getenv("CMPSERVE_INDEXES") == "true", "Display indexes for directories")
+	exposeHiddenFiles := flag.Bool("show-hidden-files", os.Getenv("CMPSERVE_SHOW_HIDDEN_FILES") == "true", "Display and serve hidden files")
 
 	flag.Parse()
 

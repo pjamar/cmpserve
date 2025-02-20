@@ -1,7 +1,6 @@
 package service
 
 import (
-	"cmpserve/internal/readers/zip"
 	"cmpserve/internal/readers/zipfast"
 	"errors"
 	"net/http"
@@ -31,7 +30,7 @@ func NewService(rootServiceDir, cacheServiceDir string, createIndexes bool, expo
 	if err != nil {
 		return nil, err
 	}
-	return &Service{rootServiceDir: rootServiceDir, cacheServiceDir: cacheServiceDir, zipReader: *zipReader, createIndexes: createIndexes}, nil
+	return &Service{rootServiceDir: rootServiceDir, cacheServiceDir: cacheServiceDir, zipReader: *zipReader, createIndexes: createIndexes, exposeHiddenFiles: exposeHiddenFiles}, nil
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
